@@ -1,0 +1,12 @@
+[package]
+name = "echo_fixture"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "echo_fixture"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
