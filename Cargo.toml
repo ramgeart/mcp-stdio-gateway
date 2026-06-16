@@ -17,6 +17,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 anyhow = "1"
+parking_lot = "0.12"
 clap = { version = "4", features = ["derive"] }
 futures = "0.3"
 bytes = "1"
