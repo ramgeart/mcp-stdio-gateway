@@ -11,7 +11,7 @@ pub struct StdioChild {
     pub id: String,
     process: TokioChild,
     stdin_tx: mpsc::Sender<String>,
-    pub stdout_rx: mpsc::Receiver<String>,
+    stdout_rx: Option<mpsc::Receiver<String>>,
 }
 
 impl StdioChild {
@@ -43,7 +43,7 @@ impl StdioChild {
         spawn_reader(stdout, stdout_tx, id.to_string());
         spawn_stderr_logger(stderr, id.to_string());
 
-        Ok(Self { id: id.to_string(), process, stdin_tx, stdout_rx })
+        Ok(Self { id: id.to_string(), process, stdin_tx, stdout_rx: Some(stdout_rx) })
     }
 
     pub async fn send(&self, line: String) -> Result<()> {
@@ -56,6 +56,10 @@ impl StdioChild {
 
     pub fn stdin_tx_clone(&self) -> mpsc::Sender<String> {
         self.stdin_tx.clone()
+    }
+
+    pub fn take_stdout_rx(&mut self) -> mpsc::Receiver<String> {
+        self.stdout_rx.take().expect("stdout_rx already taken")
     }
 
     pub async fn kill(mut self) {
@@ -145,9 +149,10 @@ mod tests {
         child.send(r#"{"jsonrpc":"2.0","id":1,"method":"ping","params":{"hello":"world"}}"#.into())
             .await.unwrap();
 
+        let mut stdout_rx = child.take_stdout_rx();
         let line = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            child.stdout_rx.recv(),
+            stdout_rx.recv(),
         ).await.expect("timeout").expect("eof");
 
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
