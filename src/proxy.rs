@@ -15,6 +15,12 @@ pub struct ChildProxy {
     _child: StdioChild,  // keeps the child process alive via kill_on_drop
 }
 
+impl std::fmt::Debug for ChildProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChildProxy").field("id", &self.id).finish_non_exhaustive()
+    }
+}
+
 impl ChildProxy {
     pub async fn spawn(id: &str, entry: &McpEntry) -> Result<Arc<Self>> {
         let mut child = StdioChild::spawn(id, &entry.command, &entry.args, &entry.env, entry.cwd.as_deref()).await?;

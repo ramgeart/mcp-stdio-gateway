@@ -4,3 +4,4 @@ pub mod jsonrpc;
 pub mod child;
 pub mod session;
 pub mod proxy;
+pub mod state;
