@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -12,6 +13,8 @@ pub struct ChildProxy {
     sessions: Arc<SessionRegistry>,
     mux: Arc<IdMux>,
     stdin_tx: mpsc::Sender<String>,
+    pending_requests: Arc<parking_lot::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
+    active_sessions: Arc<parking_lot::Mutex<HashSet<String>>>,
     _child: StdioChild,  // keeps the child process alive via kill_on_drop
 }
 
@@ -26,6 +29,8 @@ impl ChildProxy {
         let mut child = StdioChild::spawn(id, &entry.command, &entry.args, &entry.env, entry.cwd.as_deref()).await?;
         let sessions = SessionRegistry::new();
         let mux = Arc::new(IdMux::new());
+        let pending_requests: Arc<parking_lot::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>> = Arc::new(parking_lot::Mutex::new(HashMap::new()));
+        let active_sessions = Arc::new(parking_lot::Mutex::new(HashSet::new()));
 
         let (in_tx, mut in_rx) = mpsc::channel::<String>(64);
 
@@ -40,6 +45,7 @@ impl ChildProxy {
         // drain child stdout -> classify + route
         let sessions_for_reader = sessions.clone();
         let mux_for_reader = mux.clone();
+        let pending_requests_for_reader = pending_requests.clone();
         let mut stdout_rx = child.take_stdout_rx();
         tokio::spawn(async move {
             while let Some(line) = stdout_rx.recv().await {
@@ -47,6 +53,19 @@ impl ChildProxy {
                     tracing::warn!("non-json line from child: {}", line);
                     continue;
                 };
+                let id_opt = v.get("id").and_then(|id| id.as_u64());
+                if let Some(outbound_id) = id_opt {
+                    let oneshot_tx = {
+                        let mut pending = pending_requests_for_reader.lock();
+                        pending.remove(&outbound_id)
+                    };
+                    if let Some(tx) = oneshot_tx {
+                        if let Outbound::RoutedResponse { payload, .. } = mux_for_reader.classify_outbound(v) {
+                            let _ = tx.send(payload);
+                        }
+                        continue;
+                    }
+                }
                 match mux_for_reader.classify_outbound(v) {
                     Outbound::RoutedResponse { session_id, payload } => {
                         if let Some(tx) = sessions_for_reader.get(&session_id) {
@@ -71,16 +90,66 @@ impl ChildProxy {
             sessions,
             mux,
             stdin_tx: in_tx,
+            pending_requests,
+            active_sessions,
             _child: child,
         }))
     }
 
     pub fn register_session(&self, session_id: String, tx: mpsc::Sender<String>) {
+        self.add_active_session(session_id.clone());
         self.sessions.register(session_id, tx);
     }
 
     pub fn drop_session(&self, session_id: &str) {
         self.sessions.remove(session_id);
+    }
+
+    pub fn add_active_session(&self, session_id: String) {
+        let mut active = self.active_sessions.lock();
+        active.insert(session_id);
+    }
+
+    pub fn drop_active_session(&self, session_id: &str) {
+        let mut active = self.active_sessions.lock();
+        active.remove(session_id);
+    }
+
+    pub fn has_active_session(&self, session_id: &str) -> bool {
+        let active = self.active_sessions.lock();
+        active.contains(session_id) || self.sessions.get(session_id).is_some()
+    }
+
+    pub async fn send_request_from_session(&self, session_id: &str, payload: serde_json::Value) -> Result<serde_json::Value> {
+        let inbound = self.mux.rewrite_inbound(session_id, payload);
+        match inbound {
+            Inbound::Request { outbound_id, payload, .. } => {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                {
+                    let mut pending = self.pending_requests.lock();
+                    pending.insert(outbound_id, tx);
+                }
+                let line = payload.to_string();
+                if self.stdin_tx.send(line).await.is_err() {
+                    let mut pending = self.pending_requests.lock();
+                    pending.remove(&outbound_id);
+                    return Err(crate::error::ProxyError::ChildExited {
+                        id: self.id.clone(),
+                        reason: "stdin channel closed".into(),
+                    });
+                }
+                let response = rx.await.map_err(|_| crate::error::ProxyError::ChildExited {
+                    id: self.id.clone(),
+                    reason: "oneshot receiver hung up (child exited?)".into(),
+                })?;
+                Ok(response)
+            }
+            Inbound::Passthrough(payload) => {
+                let line = payload.to_string();
+                let _ = self.stdin_tx.send(line).await;
+                Ok(serde_json::Value::Null)
+            }
+        }
     }
 
     pub async fn send_from_session(&self, session_id: &str, payload: serde_json::Value) -> Result<()> {

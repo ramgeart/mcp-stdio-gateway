@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Stdio;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,7 +23,13 @@ impl StdioChild {
         env: &HashMap<String, String>,
         cwd: Option<&str>,
     ) -> Result<Self> {
-        let mut cmd = Command::new(program);
+        let mut resolved_program = program.to_string();
+        #[cfg(windows)]
+        if let Some(resolved) = find_windows_program(program) {
+            resolved_program = resolved;
+        }
+
+        let mut cmd = Command::new(&resolved_program);
         cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -115,6 +122,38 @@ fn spawn_stderr_logger(stderr: tokio::process::ChildStderr, id: String) {
     });
 }
 
+#[cfg(windows)]
+fn find_windows_program(program: &str) -> Option<String> {
+    let path = Path::new(program);
+    if path.extension().is_some() {
+        return None;
+    }
+
+    let extensions = ["exe", "cmd", "bat", "com"];
+
+    if program.contains('\\') || program.contains('/') {
+        for ext in &extensions {
+            let candidate = path.with_extension(*ext);
+            if candidate.exists() {
+                return Some(candidate.to_string_lossy().into_owned());
+            }
+        }
+        return None;
+    }
+
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for ext in &extensions {
+                let candidate = dir.join(format!("{}.{}", program, ext));
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +197,14 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
         assert_eq!(v["id"], serde_json::json!(1));
         assert_eq!(v["result"]["echoed"]["hello"], serde_json::json!("world"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_find_windows_program() {
+        let cmd_resolved = find_windows_program("cmd");
+        assert!(cmd_resolved.is_some());
+        let path = cmd_resolved.unwrap();
+        assert!(path.to_lowercase().ends_with("cmd.exe"));
     }
 }
