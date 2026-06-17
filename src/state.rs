@@ -114,6 +114,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             cwd: None,
+            is_http: false,
         });
         Config {
             server: Default::default(),

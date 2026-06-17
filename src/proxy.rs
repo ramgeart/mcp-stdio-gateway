@@ -15,7 +15,8 @@ pub struct ChildProxy {
     stdin_tx: mpsc::Sender<String>,
     pending_requests: Arc<parking_lot::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>>,
     active_sessions: Arc<parking_lot::Mutex<HashSet<String>>>,
-    _child: StdioChild,  // keeps the child process alive via kill_on_drop
+    _child: Option<StdioChild>,  // keeps the stdio child process alive via kill_on_drop (if any)
+    pub is_http: bool,
 }
 
 impl std::fmt::Debug for ChildProxy {
@@ -26,13 +27,74 @@ impl std::fmt::Debug for ChildProxy {
 
 impl ChildProxy {
     pub async fn spawn(id: &str, entry: &McpEntry) -> Result<Arc<Self>> {
-        let mut child = StdioChild::spawn(id, &entry.command, &entry.args, &entry.env, entry.cwd.as_deref()).await?;
         let sessions = SessionRegistry::new();
         let mux = Arc::new(IdMux::new());
         let pending_requests: Arc<parking_lot::Mutex<HashMap<u64, tokio::sync::oneshot::Sender<serde_json::Value>>>> = Arc::new(parking_lot::Mutex::new(HashMap::new()));
         let active_sessions = Arc::new(parking_lot::Mutex::new(HashSet::new()));
 
         let (in_tx, mut in_rx) = mpsc::channel::<String>(64);
+
+        if entry.is_http {
+            let client = ::reqwest::Client::new();
+            let http_url = entry.command.clone();
+
+            // forward inbound channel to HTTP POST
+            let pending_requests_for_post = pending_requests.clone();
+            let mux_for_post = mux.clone();
+            let http_url_for_post = http_url.clone();
+            tokio::spawn(async move {
+                while let Some(line) = in_rx.recv().await {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    let outbound_id_opt = v.get("id").and_then(|id| id.as_u64());
+                    
+                    let client_clone = client.clone();
+                    let url_clone = http_url_for_post.clone();
+                    let pending_requests_clone = pending_requests_for_post.clone();
+                    let mux_clone = mux_for_post.clone();
+                    
+                    tokio::spawn(async move {
+                        let res_post: std::result::Result<::reqwest::Response, ::reqwest::Error> = client_clone.post(&url_clone)
+                            .header("Accept", "application/json")
+                            .header("Content-Type", "application/json")
+                            .json(&v)
+                            .send().await;
+
+                        if let Ok(resp) = res_post {
+                            if resp.status().is_success() {
+                                if let Ok(resp_json) = resp.json::<serde_json::Value>().await {
+                                    if let Some(outbound_id) = outbound_id_opt {
+                                        let oneshot_tx = {
+                                            let mut pending = pending_requests_clone.lock();
+                                            pending.remove(&outbound_id)
+                                        };
+                                        if let Some(tx) = oneshot_tx {
+                                            if let Outbound::RoutedResponse { payload, .. } = mux_clone.classify_outbound(resp_json) {
+                                                let _ = tx.send(payload);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+
+            return Ok(Arc::new(Self {
+                id: id.to_string(),
+                sessions,
+                mux,
+                stdin_tx: in_tx,
+                pending_requests,
+                active_sessions,
+                _child: None,
+                is_http: true,
+            }));
+        }
+
+        let mut child = StdioChild::spawn(id, &entry.command, &entry.args, &entry.env, entry.cwd.as_deref()).await?;
 
         // forward inbound channel -> child stdin
         let child_send_tx = child.stdin_tx_clone();
@@ -92,7 +154,8 @@ impl ChildProxy {
             stdin_tx: in_tx,
             pending_requests,
             active_sessions,
-            _child: child,
+            _child: Some(child),
+            is_http: false,
         }))
     }
 
@@ -181,6 +244,7 @@ mod tests {
             args: vec![],
             env: HashMap::new(),
             cwd: None,
+            is_http: false,
         }
     }
 

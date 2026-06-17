@@ -25,6 +25,7 @@ async fn sse_round_trip_with_echo_server() {
         args: vec![],
         env: HashMap::new(),
         cwd: None,
+        is_http: false,
     });
     let cfg = Config { server: ServerSection::default(), mcp };
     let state = AppState::new(cfg);

@@ -253,7 +253,7 @@ mod tests {
     async fn list_returns_configured_ids() {
         let mut mcp = HashMap::new();
         mcp.insert("mcp-foo".into(), McpEntry {
-            command: "true".into(), args: vec![], env: HashMap::new(), cwd: None,
+            command: "true".into(), args: vec![], env: HashMap::new(), cwd: None, is_http: false,
         });
         let state = AppState::new(Config { server: ServerSection::default(), mcp });
         let app = router(state);

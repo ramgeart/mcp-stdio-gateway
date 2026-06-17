@@ -204,15 +204,22 @@ async fn handle_command(input: &str, state: &AppState) {
             return;
         }
 
+        let is_http = cmd.starts_with("http://") || cmd.starts_with("https://");
+
         let entry = crate::config::McpEntry {
             command: cmd.to_string(),
             args,
             env: std::collections::HashMap::new(),
             cwd: None,
+            is_http,
         };
 
         state.add_server(name.to_string(), entry);
-        println!("Success: tool \"{}\" has been added/updated successfully with command '{}'. Connect to it at http://localhost:9000/{}/sse or /{}/mcp", name, cmd, name, name);
+        if is_http {
+            println!("Success: gateway HTTP/Streamable tool \"{}\" added successfully. Proxying to external: {}", name, cmd);
+        } else {
+            println!("Success: tool \"{}\" has been added/updated successfully with command '{}'. Connect to it at http://localhost:9000/{}/sse or /{}/mcp", name, cmd, name, name);
+        }
         return;
     }
 

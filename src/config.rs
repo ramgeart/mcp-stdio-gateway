@@ -38,6 +38,8 @@ pub struct McpEntry {
     pub env: HashMap<String, String>,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub is_http: bool,
 }
 
 pub fn load_from_path(path: &Path) -> Result<Config> {
