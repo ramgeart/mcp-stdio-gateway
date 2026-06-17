@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 use crate::error::{ProxyError, Result};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Config {
     #[serde(default)]
     pub server: ServerSection,
@@ -12,7 +12,7 @@ pub struct Config {
     pub mcp: HashMap<String, McpEntry>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ServerSection {
     #[serde(default = "default_host")]
     pub host: String,
@@ -29,17 +29,21 @@ impl Default for ServerSection {
 fn default_host() -> String { "127.0.0.1".into() }
 fn default_port() -> u16 { 9000 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct McpEntry {
     pub command: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_false")]
     pub is_http: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 pub fn load_from_path(path: &Path) -> Result<Config> {
@@ -49,6 +53,12 @@ pub fn load_from_path(path: &Path) -> Result<Config> {
         validate_slug(id)?;
     }
     Ok(cfg)
+}
+
+pub fn save_to_path(path: &Path, config: &Config) -> Result<()> {
+    let raw = toml::to_string_pretty(config)?;
+    std::fs::write(path, raw)?;
+    Ok(())
 }
 
 pub fn validate_slug(s: &str) -> Result<()> {

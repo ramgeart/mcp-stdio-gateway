@@ -25,6 +25,9 @@ pub enum ProxyError {
 
     #[error("toml error: {0}")]
     Toml(#[from] toml::de::Error),
+
+    #[error("toml serialization error: {0}")]
+    TomlSer(#[from] toml::ser::Error),
 }
 
 pub type Result<T> = std::result::Result<T, ProxyError>;

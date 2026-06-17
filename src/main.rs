@@ -214,11 +214,17 @@ async fn handle_command(input: &str, state: &AppState) {
             is_http,
         };
 
-        state.add_server(name.to_string(), entry);
-        if is_http {
-            println!("Success: gateway HTTP/Streamable tool \"{}\" added successfully. Proxying to external: {}", name, cmd);
-        } else {
-            println!("Success: tool \"{}\" has been added/updated successfully with command '{}'. Connect to it at http://localhost:9000/{}/sse or /{}/mcp", name, cmd, name, name);
+        match state.add_server(name.to_string(), entry) {
+            Ok(_) => {
+                if is_http {
+                    println!("Success: gateway HTTP/Streamable tool \"{}\" added and saved successfully. Proxying to external: {}", name, cmd);
+                } else {
+                    println!("Success: tool \"{}\" has been added/updated and saved successfully with command '{}'. Connect to it at http://localhost:9000/{}/sse or /{}/mcp", name, cmd, name, name);
+                }
+            }
+            Err(e) => {
+                println!("Error saving configuration change to disk: {}", e);
+            }
         }
         return;
     }

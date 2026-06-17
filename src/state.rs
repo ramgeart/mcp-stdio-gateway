@@ -50,14 +50,26 @@ impl AppState {
         self.proxies.lock().keys().cloned().collect()
     }
 
-    pub fn add_server(&self, id: String, entry: crate::config::McpEntry) {
+    pub fn add_server(&self, id: String, entry: crate::config::McpEntry) -> Result<()> {
         self.config.lock().mcp.insert(id, entry);
+        self.save_to_disk()
     }
 
     pub async fn disable_server(&self, id: &str) -> bool {
         let removed_config = self.config.lock().mcp.remove(id).is_some();
         let removed_proxy = self.proxies.lock().remove(id).is_some();
+        if removed_config {
+            let _ = self.save_to_disk();
+        }
         removed_config || removed_proxy
+    }
+
+    pub fn save_to_disk(&self) -> Result<()> {
+        if let Some(ref path) = self.config_path {
+            let config_guard = self.config.lock();
+            crate::config::save_to_path(path, &config_guard)?;
+        }
+        Ok(())
     }
 
     pub async fn reload_from_disk(&self) -> Result<()> {
