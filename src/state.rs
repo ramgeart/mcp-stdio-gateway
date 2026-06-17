@@ -8,20 +8,27 @@ use crate::proxy::ChildProxy;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<Config>,
+    pub config: Arc<Mutex<Config>>,
     proxies: Arc<Mutex<HashMap<String, Arc<ChildProxy>>>>,
+    pub config_path: Option<std::path::PathBuf>,
 }
 
 impl AppState {
     pub fn new(config: Config) -> Self {
         Self {
-            config: Arc::new(config),
+            config: Arc::new(Mutex::new(config)),
             proxies: Arc::new(Mutex::new(HashMap::new())),
+            config_path: None,
         }
     }
 
+    pub fn with_path(mut self, path: std::path::PathBuf) -> Self {
+        self.config_path = Some(path);
+        self
+    }
+
     pub fn ids(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.config.mcp.keys().cloned().collect();
+        let mut v: Vec<String> = self.config.lock().mcp.keys().cloned().collect();
         v.sort();
         v
     }
@@ -31,7 +38,7 @@ impl AppState {
         if let Some(p) = self.proxies.lock().get(id).cloned() {
             return Ok(p);
         }
-        let entry = self.config.mcp.get(id)
+        let entry = self.config.lock().mcp.get(id)
             .ok_or_else(|| ProxyError::UnknownServer(id.to_string()))?
             .clone();
         let proxy = ChildProxy::spawn(id, &entry).await?;
@@ -41,6 +48,51 @@ impl AppState {
 
     pub fn live_ids(&self) -> Vec<String> {
         self.proxies.lock().keys().cloned().collect()
+    }
+
+    pub fn add_server(&self, id: String, entry: crate::config::McpEntry) {
+        self.config.lock().mcp.insert(id, entry);
+    }
+
+    pub async fn disable_server(&self, id: &str) -> bool {
+        let removed_config = self.config.lock().mcp.remove(id).is_some();
+        let removed_proxy = self.proxies.lock().remove(id).is_some();
+        removed_config || removed_proxy
+    }
+
+    pub async fn reload_from_disk(&self) -> Result<()> {
+        if let Some(ref path) = self.config_path {
+            let next_config = crate::config::load_from_path(path)?;
+            
+            let mut current_config = self.config.lock();
+            let mut current_proxies = self.proxies.lock();
+            
+            current_config.server = next_config.server;
+            
+            let mut keys_to_remove = Vec::new();
+            for server_id in current_proxies.keys() {
+                if !next_config.mcp.contains_key(server_id) {
+                    keys_to_remove.push(server_id.clone());
+                } else {
+                    let next_entry = &next_config.mcp[server_id];
+                    let current_entry = current_config.mcp.get(server_id);
+                    if let Some(curr) = current_entry {
+                        if curr.command != next_entry.command || curr.args != next_entry.args || curr.env != next_entry.env || curr.cwd != next_entry.cwd {
+                            keys_to_remove.push(server_id.clone());
+                        }
+                    }
+                }
+            }
+            
+            for key in keys_to_remove {
+                current_proxies.remove(&key);
+            }
+            
+            current_config.mcp = next_config.mcp;
+            Ok(())
+        } else {
+            Err(ProxyError::Config("No configuration path tracking available to reload".to_string()))
+        }
     }
 }
 
